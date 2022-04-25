@@ -161,3 +161,85 @@ const catalogGithubModule = createBackendModule({
     holder.getApi(pluginRouteApiRef).addHandler(router);
   },
 });
+
+/*
+
+Nails:
+ - For collections of features, e.g. catalog processors:
+    - Provide a default set, easily add or remove from this set
+    - Configure individual features
+    - Trees of features
+ - Plugin modules that extend the functionality of existing plugins
+ -
+
+
+Hammers:
+ - Hooks
+ - Modules
+ - ApiRefs, DI
+
+*/
+
+
+
+providers.google.create(): Inflatable<AuthProvider>
+providers.google.resolvers.byCommonLabel
+providers.github.resolvers.byCommonLabel
+
+const urlReaderProcessor = createFeature({
+  init(x: catalogPlugin.FeatureApi)
+})
+
+import {processors} from '@backstage/plugin-catalog-backend';
+
+processors.urlReader.create()
+
+processors: FeatureCollection<CatalogProcessor>
+
+export const processors = createFeatureCollection({
+  urlReader: ...,
+});
+
+catalogInstance.processors.replace(({ defaults }) => [...defaults, myNew]);
+
+backend.add(catalogPlugin, (i: T) => {
+  i.builder.processors.replace(a, b, c);
+});
+
+import {derpModule} from 'derp-module'
+
+backend.add(catalogPlugin, {
+  processors: processors.create({
+    without: ['urlReader'],
+    add: [myUrlReader]
+  }),
+  // Maybe we could do this?
+  processors2: {
+    without: ['urlReader'],
+    add: [myUrlReader]
+  },
+  // Or if you're some kind of fluent-api loving maniac, we could:
+  processors3: processors.default().without('urlReader').append(myUrlReader).shuffle(),
+});
+backend.add(injectionOverride(derpModule, {}), derpConfig)
+backend.add(derpModule.withOverride(), derpConfig)
+backend.add(derpModule, derpConfig, {overrides: {}})
+backend.add(derpModule(derpConfig), {overrides: {}})
+
+providers.google.create(): Bottled<AuthProvider>
+
+processors.default() = [
+  processors.proc0.create(),
+  processors.proc1.create(),
+  processors.proc2.create(),
+  processors.proc3.create(),
+  processors.proc4.create(),
+  processors.proc5.create(),
+  processors.proc6.create(),
+  processors.proc7.create(),
+  processors.proc8.create(),
+  processors.proc9.create(),
+]
+
+entityValidators.envelope.create()
+entityValidators.envelope.validators.isValidString
