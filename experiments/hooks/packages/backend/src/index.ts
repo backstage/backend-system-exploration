@@ -51,6 +51,8 @@ const catalogPlugin: BackstageBackendPlugin<{
   configureParams: { builder: CatalogBuilder };
 }>;
 backend.add(catalogPlugin, {
+  // This is a bit of a n earlier idea that we likely would replace
+  // with the hook pattern just below if we end up going with those.
   configure: {
     deps: { logger: loggerApiRef },
     setup({ builder }, { logger }) {
@@ -58,6 +60,8 @@ backend.add(catalogPlugin, {
     },
   },
 
+  // Might override the default modules provided by the catalog?
+  // Perhaps mix in ...catalogPlugin.defaultModules or something like that if needed.
   modules: [scaffolderEntitiesProcessorModule],
 
   register(hooks) {
@@ -84,6 +88,7 @@ backend.add(catalogPlugin, {
       }
     );
 
+    // Random floating example of how a custom hook could be defined.
     const catalogPlugin = createBackendPlugin({
       hooks: {
         tearDownEngine: createHookRef<{ catalogEngine: CatalogEngine }>(
@@ -124,6 +129,8 @@ const catalogPlugin = createBackendPlugin({
     locationStore: locationStoreModule(),
   },
   register(holder, hooks) {
+    // This direct access of the holder is a bit scary, probably only have
+    // the APIs accessible via the tap like in the examples above.
     holder.getApi(pluginRouteApiRef).addHandler(router);
     holder.getApi(rootRouteApiRef).addHandler(rootRouter);
 
