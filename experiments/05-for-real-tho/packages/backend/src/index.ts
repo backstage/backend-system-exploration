@@ -51,7 +51,7 @@ await backend.start();
 await startBackend({
   modules: [
     customEnvStuff(),
-    authProvide({
+    authPlugin({
       providers: {
         github: {
           signIn: {
