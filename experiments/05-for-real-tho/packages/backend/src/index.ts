@@ -27,28 +27,7 @@ LATER SCOPE:
   - custom express middleware around it all
 */
 
-interface Backend {
-  add(x: Plugin | Module): void;
-  start(): Promise<void>;
-}
-
-async function createBackend({ env = process.env }) {
-  require(resolveOwn('package.json')).dependencies;
-}
-
 const backend = await createBackend();
-
-backend.add(
-  authPlugin({
-    providers: {
-      github: {
-        signIn: {
-          resolver: authPlugin.providers.github.resolvers.nameMatchingName,
-        },
-      },
-    },
-  })
-);
 
 backend.add(authPlugin());
 backend.add(
