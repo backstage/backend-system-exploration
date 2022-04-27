@@ -36,9 +36,7 @@ async function createBackend({ env = process.env }) {
   require(resolveOwn('package.json')).dependencies;
 }
 
-const backend = await createBackend({
-  modules: 'auto',
-});
+const backend = await createBackend();
 
 backend.add(
   authPlugin({
@@ -58,10 +56,6 @@ backend.add(
     resolver: githubAuthModule.resolvers.nameMatchingName,
   })
 );
-
-catalogPlugin.hooks.initProcessors.tap(async (x, next) => {
-  await next();
-});
 
 backend.add(catalogPlugin());
 backend.add(catalogPlugin.searchExtensions());
