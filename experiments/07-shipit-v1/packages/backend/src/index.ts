@@ -192,20 +192,168 @@ export const catalogPlugin = createBackendPlugin({
 
 ////////////////////////////////////////////////////////////////
 
+export const catalogPlugin = createBackendPlugin({
+  async init(env: BackendEnv) {
+    const catalogEngine = new Engine();
+    await catalogEngine.start();
+
+    const apiRouter = env.getApiRouter();
+    apiRouter.use('/v1', catalogRoutesV1);
+
+    return async () => {
+      await catalogEngine.stop();
+    };
+  },
+  extensionPoints: [
+    {
+      point: catalogExtensionPoint,
+      factory: () => ({
+        addProcessor(processor: CatalogProcessor) {
+          this.processors.add(processor);
+        },
+      }),
+    },
+  ],
+});
+
+// PROBLEM: How do we initialize extension points while sharing internal state?
+
+// What if register method returns the init method?
+export const catalogPlugin = createBackendPlugin({
+  register(env: BackendEnv) {
+    const point = new CatalogExtensionPointImpl();
+
+    env.provideExtensionPoint(catalogExtensionPoint, point);
+
+    return async () => {
+      // init
+
+      const catalogEngine = new Engine(point.getProcessors());
+      await catalogEngine.start();
+
+      const apiRouter = env.getApiRouter();
+      apiRouter.use('/v1', catalogRoutesV1);
+    };
+  },
+});
+
+class CatalogExtensionPointImpl implements CatalogExtensionPoint {}
+
+export const catalogPlugin = createBackendPlugin({
+  register(env: BackendEnv) {
+    const processingExtensions = new CatalogExtensionPointImpl();
+
+    env.registerApi({
+      api: catalogApis.processingExtensions,
+      value: processingExtensions,
+    });
+
+    env.init({
+      deps: {
+        apiRouter: backend.apis.apiRouter,
+      },
+      async init({ apiRouter }) {
+        const catalog = new Catalog(processingExtensions.getProcessors());
+        await catalog.start();
+
+        apiRouter.use('/v1', createV1CatalogRoutes(catalog));
+      },
+    });
+  },
+});
+
+export const catalogPlugin = createBackendPlugin({
+  extensionPoints: [
+    {
+      extensionPoint: catalogExtensionRef,
+      value: catalogExtension,
+    },
+  ],
+  deps: {
+    apiRouter: apiRouterExtensionRef,
+  },
+  init() {
+    const catalogExtension = wa ?? t;
+    const engine = new Engine(catalogExtension.getProcessors());
+    await engine.start();
+
+    apiRouter.use('/v1', catalogRoutesV1);
+  },
+});
+
+import catalogEnv from '@backstage/backend-catalog-node';
+import routeEnv from '@backstage/backend-common';
+
+export const catalogPlugin = createBackendPlugin({
+  async register(ctx: BackendContext) {
+    const { router } = yield ctx.get(routeEnv);
+    router.use('/catalog', routes);
+    const catalogEngine = new CatalogEngine();
+    catalogEngine.addProcessor(builtinProcessor());
+    ctx.set(catalogEnv, { engine: catalogEngine });
+    return async () => {
+      await catalogEngine.start();
+    };
+  },
+});
+
+interface CatalogExtensionPoint {
+  addProcessor(processor: CatalogProcessor): void;
+  readonly processors: CatalogProcessor[];
+}
+
+export const catalogExtensionPoint =
+  createBackendExtensionPoint<CatalogExtensionPoint>({
+    id: 'catalog',
+    implementation: {
+      addProcessor(processor: CatalogProcessor) {
+        this.processors.add(processor);
+      },
+    },
+  });
+
 import {
   createBackendExtension,
   BackendEnv,
 } from '@backstage/backend-plugin-api';
-import { catalogEnv } from '@backstage/plugin-catalog-backend';
+import { catalogExtensionPoint } from '@backstage/plugin-catalog-node';
 
 const scaffolderCatalogExtension = createBackendExtension({
   deps: [catalogEnv],
-  async init(ctx) {
-    const catalog = ctx.resolve(catalogEnv, { optional: true });
-    if (!catalog) {
-      throw new Error('Catalog environment is not available');
+  async init(ctx, options) {
+    const extension = ctx.resolve(catalogExtensionPoint, { optional: true });
+    if (!extension) {
+      throw new Error('Catalog extension is not available');
     }
 
-    catalog.addProcessor(new scaffolderV3Processor());
+    extension.addProcessor(new scaffolderV3Processor());
+  },
+});
+
+const scaffolderCatalogExtension = createBackendExtension<OptionsType>({
+  async register(env, _options: OptionsType) {
+    env.decorate(
+      { api: catalogApis.processingExtensions },
+      (processingExtensions) => {
+        processingExtensions?.addProcessor(new ScaffolderV3Processor());
+      }
+    );
+
+    env.decorate({ api: backend.apis.lifecycle }, (lifecycle) => {
+      lifecycle.onStart(async () => {
+        // start stuff
+      });
+    });
+
+    env.consume({
+      deps: {
+        lifecycle: backend.apis.lifecycle,
+      },
+      callback({ lifecycle }) {
+        lifecycle.onStart(async () => {
+          processingExtensions?.addProcessor(new ScaffolderV3Processor());
+        });
+      },
+    });
   },
 });
