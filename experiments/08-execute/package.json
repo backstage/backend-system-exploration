@@ -1,0 +1,7 @@
+{
+  "name": "execute",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "npx ts-node-dev --respawn --transpile-only ."
+  }
+}
