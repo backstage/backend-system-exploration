@@ -31,7 +31,7 @@ depth:
 /**************************************************************/
 
 interface BackendExtension {
-  register(hooks: BackendHooks): void;
+  register(env: BackendEnv): void;
 }
 
 interface BackendPlugin extends BackendExtension {}
@@ -49,7 +49,6 @@ interface Backend {
 class BackstageBackend implements Backend {
   #started = false;
   #extensions = new Set<BackendExtension>();
-  #hooks: BackendHooks;
 
   private constructor(private readonly config: Config) {}
 
@@ -68,19 +67,28 @@ class BackstageBackend implements Backend {
     }
     this.#started = true;
 
-    this.#hooks = new BackendHooks(this);
+    const env = new BackendEnv(this);
 
     for (const extension of this.#extensions) {
-      extension.register(hooks);
+      const extensionInit = extension.register(env);
+      // TODO: Resolve init order
+      this.#inits.push(extensionInit);
     }
 
     this.validateSetup();
 
-    await this.#hooks.runHook('start');
+    for (const inits of this.#inits) {
+      // TODO: DI
+      const deps = this.#getInitDeps(inits.deps);
+      // Maybe return stop? or lifecycle API
+      const stop = await init(deps);
+    }
   }
 
   async stop(): Promise<void> {
-    await this.#hooks.runHook('stop');
+    for (const stop of this.#stops) {
+      await stop.stop();
+    }
   }
 }
 
@@ -124,131 +132,35 @@ await backend.start();
 /********************** CATALOG PLUGIN ************************/
 /**************************************************************/
 
-function createBackendPlugin(options: {}): BackendExtension {}
-
-// const backendEnv = createBackendEnv({
-//   hooks: {
-//     start: createBackendHook(),
-//     stop: createBackendHook(),
-//   },
-// });
-
 ////////////////////////////////////////////////////////////////
 
-import { createBackendPlugin, BackendEnv } from '@backstage/backend-plugin-api';
+interface CatalogExtensionPoint {
+  addProcessor(processor: CatalogProcessor): void;
+}
 
-export const catalogPlugin = createBackendPlugin({
-  register(env: BackendEnv) {
-    const catalogEngine = new Engine();
-
-    env.onStart(async () => {
-      const apiRouter = env.getApiRouter();
-      await catalogEngine.start();
-      apiRouter.use('/v1', catalogRoutesV1);
-    });
-
-    env.onStop(async () => {
-      await catalogEngine.stop();
-      console.log('Engine has been terminated!');
-    });
-  },
-});
-
-export const catalogPlugin = createBackendPlugin({
-  register(env: BackendEnv) {
-    const catalogEngine = new Engine();
-
-    // kinda like .tap -> next()
-    env.onStart(async () => {
-      const apiRouter = env.getApiRouter();
-      await catalogEngine.start();
-      apiRouter.use('/v1', catalogRoutesV1);
-
-      return async () => {
-        await catalogEngine.stop();
-        console.log('Engine has been terminated!');
-      };
-    });
-  },
-});
-
-export const catalogPlugin = createBackendPlugin({
-  async init(env: BackendEnv) {
-    const catalogEngine = new Engine();
-    await catalogEngine.start();
-
-    const apiRouter = env.getApiRouter();
-    apiRouter.use('/v1', catalogRoutesV1);
-
-    return async () => {
-      await catalogEngine.stop();
-    };
-  },
-});
-
-/**************************************************************/
-/********************** CATALOG PLUGIN ************************/
-/**************************************************************/
-
-////////////////////////////////////////////////////////////////
-
-export const catalogPlugin = createBackendPlugin({
-  async init(env: BackendEnv) {
-    const catalogEngine = new Engine();
-    await catalogEngine.start();
-
-    const apiRouter = env.getApiRouter();
-    apiRouter.use('/v1', catalogRoutesV1);
-
-    return async () => {
-      await catalogEngine.stop();
-    };
-  },
-  extensionPoints: [
-    {
-      point: catalogExtensionPoint,
-      factory: () => ({
-        addProcessor(processor: CatalogProcessor) {
-          this.processors.add(processor);
-        },
-      }),
-    },
-  ],
-});
+export const catalogExtensionPoint =
+  createBackendExtensionPoint<CatalogExtensionPoint>({
+    id: 'catalog',
+  });
 
 // PROBLEM: How do we initialize extension points while sharing internal state?
-
-// What if register method returns the init method?
-export const catalogPlugin = createBackendPlugin({
-  register(env: BackendEnv) {
-    const point = new CatalogExtensionPointImpl();
-
-    env.provideExtensionPoint(catalogExtensionPoint, point);
-
-    return async () => {
-      // init
-
-      const catalogEngine = new Engine(point.getProcessors());
-      await catalogEngine.start();
-
-      const apiRouter = env.getApiRouter();
-      apiRouter.use('/v1', catalogRoutesV1);
-    };
-  },
-});
+// SOLUTION: Init order is determined by the init API registration and dependencies.
+//           A plugin init function will not be run until all of its dependents of its
+//           init APIs have been initialized.
 
 class CatalogExtensionPointImpl implements CatalogExtensionPoint {}
 
 export const catalogPlugin = createBackendPlugin({
-  register(env: BackendEnv) {
+  register(env: BackendEnv, options) {
     const processingExtensions = new CatalogExtensionPointImpl();
 
-    env.registerApi({
+    // plugins depending on this API will be initialized before this plugins init method is executed.
+    env.registerStaticInitApi({
       api: catalogApis.processingExtensions,
       value: processingExtensions,
     });
 
-    env.init({
+    return {
       deps: {
         apiRouter: backend.apis.apiRouter,
       },
@@ -258,101 +170,18 @@ export const catalogPlugin = createBackendPlugin({
 
         apiRouter.use('/v1', createV1CatalogRoutes(catalog));
       },
-    });
-  },
-});
-
-export const catalogPlugin = createBackendPlugin({
-  extensionPoints: [
-    {
-      extensionPoint: catalogExtensionRef,
-      value: catalogExtension,
-    },
-  ],
-  deps: {
-    apiRouter: apiRouterExtensionRef,
-  },
-  init() {
-    const catalogExtension = wa ?? t;
-    const engine = new Engine(catalogExtension.getProcessors());
-    await engine.start();
-
-    apiRouter.use('/v1', catalogRoutesV1);
-  },
-});
-
-import catalogEnv from '@backstage/backend-catalog-node';
-import routeEnv from '@backstage/backend-common';
-
-export const catalogPlugin = createBackendPlugin({
-  async register(ctx: BackendContext) {
-    const { router } = yield ctx.get(routeEnv);
-    router.use('/catalog', routes);
-    const catalogEngine = new CatalogEngine();
-    catalogEngine.addProcessor(builtinProcessor());
-    ctx.set(catalogEnv, { engine: catalogEngine });
-    return async () => {
-      await catalogEngine.start();
     };
-  },
-});
-
-interface CatalogExtensionPoint {
-  addProcessor(processor: CatalogProcessor): void;
-  readonly processors: CatalogProcessor[];
-}
-
-export const catalogExtensionPoint =
-  createBackendExtensionPoint<CatalogExtensionPoint>({
-    id: 'catalog',
-    implementation: {
-      addProcessor(processor: CatalogProcessor) {
-        this.processors.add(processor);
-      },
-    },
-  });
-
-import {
-  createBackendExtension,
-  BackendEnv,
-} from '@backstage/backend-plugin-api';
-import { catalogExtensionPoint } from '@backstage/plugin-catalog-node';
-
-const scaffolderCatalogExtension = createBackendExtension({
-  deps: [catalogEnv],
-  async init(ctx, options) {
-    const extension = ctx.resolve(catalogExtensionPoint, { optional: true });
-    if (!extension) {
-      throw new Error('Catalog extension is not available');
-    }
-
-    extension.addProcessor(new scaffolderV3Processor());
   },
 });
 
 const scaffolderCatalogExtension = createBackendExtension<OptionsType>({
   async register(env, _options: OptionsType) {
-    env.decorate(
-      { api: catalogApis.processingExtensions },
-      (processingExtensions) => {
-        processingExtensions?.addProcessor(new ScaffolderV3Processor());
-      }
-    );
-
-    env.decorate({ api: backend.apis.lifecycle }, (lifecycle) => {
-      lifecycle.onStart(async () => {
-        // start stuff
-      });
-    });
-
-    env.consume({
+    env.init({
       deps: {
-        lifecycle: backend.apis.lifecycle,
+        processingExtensions: catalogApis.processingExtensions,
       },
-      callback({ lifecycle }) {
-        lifecycle.onStart(async () => {
-          processingExtensions?.addProcessor(new ScaffolderV3Processor());
-        });
+      async init({ processingExtensions }) {
+        processingExtensions.addProcessor(new ScaffolderV3Processor());
       },
     });
   },
