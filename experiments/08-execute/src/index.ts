@@ -29,14 +29,17 @@ interface BackendRegisterInit {
 }
 
 interface Backend {
-  add(extension: BackendRegisterable): void;
+  add<TOptions>(
+    extension: BackendRegisterable<TOptions>,
+    options?: TOptions
+  ): void;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
 
 class BackstageBackend implements Backend {
   #started = false;
-  #extensions = new Set<BackendRegisterable>();
+  #extensions = new Map<BackendRegisterable<unknown>, unknown>();
   #stops = [];
   #registerInits = new Array<BackendRegisterInit>();
   #apis = new Map<ApiRef<unknown>, unknown>();
@@ -50,13 +53,13 @@ class BackstageBackend implements Backend {
     );
   }
 
-  add(extension: BackendRegisterable) {
+  add<TOptions>(extension: BackendRegisterable<TOptions>, options?: TOptions) {
     if (this.#started) {
       throw new Error(
         'extension can not be added after the backend has started'
       );
     }
-    this.#extensions.add(extension);
+    this.#extensions.set(extension, options);
   }
 
   async start(): Promise<void> {
@@ -66,36 +69,39 @@ class BackstageBackend implements Backend {
     }
     this.#started = true;
 
-    for (const extension of this.#extensions) {
+    for (const [extension, options] of this.#extensions) {
       const provides = new Set<ApiRef<unknown>>();
 
       let registerInit: BackendRegisterInit | undefined = undefined;
 
       console.log('Registering', extension.id);
-      extension.register({
-        registerInitApi: (api, impl) => {
-          if (registerInit) {
-            throw new Error('registerInitApi called after registerInit');
-          }
-          if (this.#apis.has(api)) {
-            throw new Error(`API ${api.id} already registered`);
-          }
-          this.#apis.set(api, impl);
-          provides.add(api);
+      extension.register(
+        {
+          registerInitApi: (api, impl) => {
+            if (registerInit) {
+              throw new Error('registerInitApi called after registerInit');
+            }
+            if (this.#apis.has(api)) {
+              throw new Error(`API ${api.id} already registered`);
+            }
+            this.#apis.set(api, impl);
+            provides.add(api);
+          },
+          registerInit: (options) => {
+            if (registerInit) {
+              throw new Error('registerInit must only be called once');
+            }
+            registerInit = {
+              id: extension.id,
+              provides,
+              consumes: new Set(Object.values(options.deps)),
+              deps: options.deps,
+              init: options.init,
+            };
+          },
         },
-        registerInit: (options) => {
-          if (registerInit) {
-            throw new Error('registerInit must only be called once');
-          }
-          registerInit = {
-            id: extension.id,
-            provides,
-            consumes: new Set(Object.values(options.deps)),
-            deps: options.deps,
-            init: options.init,
-          };
-        },
-      });
+        options
+      );
 
       if (!registerInit) {
         throw new Error(
@@ -159,19 +165,19 @@ class BackstageBackend implements Backend {
   }
 }
 
-interface BackendRegisterable {
+type BackendRegisterable<TOptions> = {
   id: string;
-  register(env: BackendEnv): void;
-}
+  register(env: BackendEnv, options?: TOptions): void;
+};
 
 function createBackend(): Backend {
   return new BackstageBackend();
 }
 
-function createBackendPlugin(
-  options: BackendRegisterable
-): BackendRegisterable {
-  return options;
+function createBackendPlugin<TOptions>(
+  config: BackendRegisterable<TOptions>
+): BackendRegisterable<TOptions> {
+  return config;
 }
 
 const createBackendExtension = createBackendPlugin;
@@ -212,9 +218,13 @@ class Catalog {
   }
 }
 
+interface CatalogPluginOptions {
+  disableProcessing?: boolean;
+}
+
 export const catalogPlugin = createBackendPlugin({
   id: 'catalog',
-  register(env: BackendEnv) {
+  register(env, options?: CatalogPluginOptions) {
     const processingExtensions = new CatalogExtensionPointImpl();
 
     // plugins depending on this API will be initialized before this plugins init method is executed.
@@ -227,7 +237,9 @@ export const catalogPlugin = createBackendPlugin({
       // },
       async init({ apiRouter }) {
         const catalog = new Catalog(processingExtensions.processors);
-        await catalog.start();
+        if (!options?.disableProcessing) {
+          await catalog.start();
+        }
 
         // apiRouter.use('/v1', createV1CatalogRoutes(catalog));
       },
@@ -262,8 +274,8 @@ const backend = createBackend();
 //   })
 // );
 
-// backend.add(catalogPlugin()); // TODO
-backend.add(catalogPlugin);
+// backend.add(catalogPlugin({disableProcessing: true})); // TODO
+backend.add(catalogPlugin, { disableProcessing: true }); // TODO
 // backend.add(catalogPlugin.searchExtensions());
 // backend.add(catalogGithubModule.orgDiscovery());
 // backend.add(catalogGithubModule.entityDiscovery());
@@ -274,5 +286,5 @@ backend.add(scaffolderCatalogExtension);
 
 backend.start().catch((error) => {
   console.error(error.stack);
-  process.exit(1);
+  // process.exit(1);
 });
