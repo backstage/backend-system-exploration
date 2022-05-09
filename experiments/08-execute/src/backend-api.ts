@@ -1,4 +1,5 @@
-import { ApiRef, BackendRegisterable } from './plugin-api';
+import { ApiRef, BackendRegisterable, createApiRef } from './plugin-api';
+import { BackendInitializer } from './backend-init';
 
 export interface BackendRegisterInit {
   id: string;
@@ -17,134 +18,165 @@ export interface Backend {
   stop(): Promise<void>;
 }
 
-class BackstageBackend implements Backend {
-  #started = false;
-  #extensions = new Map<BackendRegisterable<unknown>, unknown>();
-  #stops = [];
-  #registerInits = new Array<BackendRegisterInit>();
-  #apis = new Map<ApiRef<unknown>, unknown>();
+interface Logger {
+  log(message: string): void;
+  child(fields: { [name: string]: string }): Logger;
+}
 
-  #getInitDeps(deps: { [name: string]: ApiRef<unknown> }) {
-    return Object.fromEntries(
-      Object.entries(deps).map(([name, apiRef]) => [
-        name,
-        this.#apis.get(apiRef),
-      ])
+interface ConfigApi {
+  getString(key: string): string;
+}
+
+export const loggerApiRef = createApiRef<Logger>({
+  id: 'core.logger',
+});
+
+export const configApiRef = createApiRef<ConfigApi>({
+  id: 'core.config',
+});
+
+export const pluginMetadataApiRef = createApiRef<PluginMetadataApi>({
+  id: 'core.pluginMetadata',
+});
+
+export function createApiFactory<
+  Api,
+  Impl extends Api,
+  Deps extends { [name in string]: unknown }
+>(factory: ApiFactory<Api, Impl, Deps>): ApiFactory<Api, Impl, Deps> {
+  return factory;
+}
+
+interface ApiForPlugin<T> {
+  forPlugin(id: string): T;
+}
+
+class ToyLogger implements Logger, ApiForPlugin<Logger> {
+  constructor(readonly fields: { [name: string]: string }) {}
+  log(message: string): void {
+    console.log(
+      `${Object.entries(this.fields)
+        .map((f) => f.join('='))
+        .join(' ')}: ${message}`
     );
   }
 
-  add<TOptions>(extension: BackendRegisterable<TOptions>, options?: TOptions) {
-    if (this.#started) {
-      throw new Error(
-        'extension can not be added after the backend has started'
-      );
-    }
-    this.#extensions.set(extension, options);
+  child(fields: { [name: string]: string }): Logger {
+    return new ToyLogger({ ...this.fields, ...fields });
   }
 
-  async start(): Promise<void> {
-    console.log(`Starting backend`);
-    if (this.#started) {
-      throw new Error('Backend has already started');
-    }
-    this.#started = true;
-
-    for (const [extension, options] of this.#extensions) {
-      const provides = new Set<ApiRef<unknown>>();
-
-      let registerInit: BackendRegisterInit | undefined = undefined;
-
-      console.log('Registering', extension.id);
-      extension.register(
-        {
-          registerInitApi: (api, impl) => {
-            if (registerInit) {
-              throw new Error('registerInitApi called after registerInit');
-            }
-            if (this.#apis.has(api)) {
-              throw new Error(`API ${api.id} already registered`);
-            }
-            this.#apis.set(api, impl);
-            provides.add(api);
-          },
-          registerInit: (options) => {
-            if (registerInit) {
-              throw new Error('registerInit must only be called once');
-            }
-            registerInit = {
-              id: extension.id,
-              provides,
-              consumes: new Set(Object.values(options.deps)),
-              deps: options.deps,
-              init: options.init,
-            };
-          },
-        },
-        options
-      );
-
-      if (!registerInit) {
-        throw new Error(
-          `registerInit was not called by register in ${extension.id}`
-        );
-      }
-
-      this.#registerInits.push(registerInit);
-    }
-
-    this.validateSetup();
-
-    const orderedRegisterResults = this.#resolveInitOrder(this.#registerInits);
-
-    for (const registerInit of orderedRegisterResults) {
-      // TODO: DI
-      const deps = this.#getInitDeps(registerInit.deps);
-      // Maybe return stop? or lifecycle API
-      this.#stops.push(await registerInit.init(deps));
-    }
-  }
-
-  async stop(): Promise<void> {
-    for (const stop of this.#stops) {
-      await stop.stop();
-    }
-  }
-
-  private validateSetup() {}
-
-  #resolveInitOrder(registerInits: Array<BackendRegisterInit>) {
-    let registerInitsToOrder = registerInits.slice();
-    const orderedRegisterInits = new Array<BackendRegisterInit>();
-
-    // TODO: Validate duplicates
-
-    while (registerInitsToOrder.length > 0) {
-      const toRemove = new Set<unknown>();
-
-      for (const registerInit of registerInitsToOrder) {
-        const unInitializedDependents = Array.from(
-          registerInit.provides
-        ).filter((r) =>
-          registerInitsToOrder.some(
-            (init) => init !== registerInit && init.consumes.has(r)
-          )
-        );
-
-        if (unInitializedDependents.length === 0) {
-          console.log(`DEBUG: pushed ${registerInit.id} to results`);
-          orderedRegisterInits.push(registerInit);
-          toRemove.add(registerInit);
-        }
-      }
-
-      registerInitsToOrder = registerInitsToOrder.filter(
-        (r) => !toRemove.has(r)
-      );
-    }
-    return orderedRegisterInits;
+  forPlugin(id: string): Logger {
+    return this.child({ pluginId: id });
   }
 }
 
-export function createBackend(): Backend {
-  return new BackstageBackend();
+const loggerFactory = createApiFactory({
+  api: loggerApiRef,
+  deps: { pluginMetadata: pluginMetadataApiRef, config: configApiRef },
+  //  staticFactory: () => new ToyLogger({}),
+  factory: async ({ pluginMetadata, config }) => {
+    // const fields = { pluginId: pluginMetadata.pluginId };
+    // return parentLogger.child(fields);
+    console.log(`Creating logger with level ${config.getString('logLevel')}`);
+    return new ToyLogger({});
+    // return {
+    //   ...parentLogger,
+    //   getThisForPlugin(id: string): Logger {
+    //     return parentLogger.child({ pluginId: id });
+    //   },
+    // };
+  },
+});
+
+export interface PluginMetadataApi {
+  pluginId: string;
+}
+
+type TypesToApiRefs<T> = { [key in keyof T]: ApiRef<T[key]> };
+
+export type ApiFactory<
+  Api,
+  Impl extends Api,
+  Deps extends { [name in string]: unknown }
+> = {
+  api: ApiRef<Api>;
+  deps: TypesToApiRefs<Deps>;
+  factory(deps: Deps): Impl;
+};
+
+export type AnyApiFactory = ApiFactory<
+  unknown,
+  unknown,
+  { [key in string]: unknown }
+>;
+
+export type ApiHolder = {
+  get<T>(api: ApiRef<T>): T | undefined;
+};
+
+class CoreApiRegistry {
+  readonly #implementations: Map<string, unknown>;
+  readonly #factories: Map<string, AnyApiFactory>;
+
+  constructor(factories: AnyApiFactory[]) {
+    this.#factories = new Map(factories.map((f) => [f.api.id, f]));
+  }
+
+  get<T>(ref: ApiRef<T>): T | undefined {
+    if (this.#implementations.has(ref.id)) {
+      return this.#implementations.get(ref.id) as T;
+    }
+
+    const implementation = this.#instantiate(ref);
+    this.#implementations.set(ref.id, implementation);
+    return implementation;
+  }
+
+  #instantiate<T>(ref: ApiRef<T>): T {
+    if (!this.#factories.has(ref.id)) {
+      return undefined;
+    }
+
+    const factory = this.#factories.get(ref.id);
+    const concreteDeps = Object.fromEntries(
+      Object.entries(factory.deps).map(([name, apiRef]) => [
+        name,
+        this.get(apiRef),
+      ])
+    );
+    return factory.factory(concreteDeps) as T;
+  }
+}
+
+export class BackstageBackend implements Backend {
+  #coreApis: CoreApiRegistry;
+  #initializer: BackendInitializer;
+
+  constructor(private readonly apiFactories: AnyApiFactory[]) {
+    this.#coreApis = new CoreApiRegistry(apiFactories);
+    this.#initializer = new BackendInitializer(this.#coreApis);
+  }
+
+  add<TOptions>(
+    extension: BackendRegisterable<TOptions>,
+    options?: TOptions
+  ): void {
+    this.#initializer.add(extension, options);
+  }
+
+  async start(): Promise<void> {
+    await this.#initializer.start();
+  }
+
+  async stop(): Promise<void> {
+    await this.#initializer.stop();
+  }
+}
+
+interface CreateBackendOptions {
+  apis: AnyApiFactory[];
+}
+
+export function createBackend(options?: CreateBackendOptions): Backend {
+  return new BackstageBackend(options?.apis ?? []);
 }
