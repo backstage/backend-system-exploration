@@ -1,7 +1,42 @@
-import { createBackend } from './backend-api';
+import { createApiFactory, createBackend, loggerApiRef } from './backend-api';
 import { catalogPlugin, scaffolderCatalogExtension } from './plugins';
 
-const backend = createBackend();
+interface Logger {
+  log(message: string): void;
+  child(fields: { [name: string]: string }): Logger;
+}
+class ToyLogger implements Logger {
+  constructor(readonly fields: { [name: string]: string }) {}
+
+  log(message: string): void {
+    console.log(
+      `${Object.entries(this.fields)
+        .map((f) => f.join('='))
+        .join(' ')}: ${message}`
+    );
+  }
+
+  child(fields: { [name: string]: string }): Logger {
+    return new ToyLogger({ ...this.fields, ...fields });
+  }
+}
+
+const loggerFactory = createApiFactory({
+  api: loggerApiRef,
+  deps: {},
+  factory: async () => {
+    // const config = await configFactory(BACKEND_ROOT_ID)
+    // console.log(`Creating logger with level ${config.getString('logLevel')}`);
+
+    const rootLogger = new ToyLogger({});
+
+    return async (pluginId: string) => rootLogger.child({ pluginId });
+  },
+});
+
+const backend = createBackend({
+  apis: [loggerFactory],
+});
 
 // backend.add(authPlugin());
 // backend.add(

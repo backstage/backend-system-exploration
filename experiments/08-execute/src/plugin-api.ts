@@ -3,9 +3,9 @@ export interface ApiRef<T> {
   T: T;
 }
 
-export function createApiRef<T>({ id }: { id: string }): ApiRef<T> {
+export function createApiRef<T>(options: { id: string }): ApiRef<T> {
   return {
-    id,
+    id: options.id,
     get T(): T {
       throw Error('NO T');
     },
@@ -17,7 +17,7 @@ export interface BackendEnv {
   registerInit<Deps extends { [name in string]: unknown }>(options: {
     deps: { [name in keyof Deps]: ApiRef<Deps[name]> };
     init: (deps: Deps) => Promise<void>;
-  });
+  }): void;
 }
 
 export type BackendRegisterable<TOptions> = {

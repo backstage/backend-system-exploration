@@ -1,10 +1,10 @@
-import { ApiHolder, Backend, BackendRegisterInit } from './backend-api';
+import { ApiHolder, BackendRegisterInit } from './backend-api';
 import { ApiRef, BackendRegisterable } from './plugin-api';
 
 export class BackendInitializer {
   #started = false;
   #extensions = new Map<BackendRegisterable<unknown>, unknown>();
-  #stops = [];
+  // #stops = [];
   #registerInits = new Array<BackendRegisterInit>();
   #apis = new Map<ApiRef<unknown>, unknown>();
   #apiHolder: ApiHolder;
@@ -13,12 +13,18 @@ export class BackendInitializer {
     this.#apiHolder = apiHolder;
   }
 
-  #getInitDeps(deps: { [name: string]: ApiRef<unknown> }) {
+  async #getInitDeps(
+    deps: { [name: string]: ApiRef<unknown> },
+    pluginId: string
+  ) {
     return Object.fromEntries(
-      Object.entries(deps).map(([name, apiRef]) => [
-        name,
-        this.#apis.get(apiRef) || this.#apiHolder.get(apiRef),
-      ])
+      await Promise.all(
+        Object.entries(deps).map(async ([name, apiRef]) => [
+          name,
+          this.#apis.get(apiRef) ||
+            (await this.#apiHolder.get(apiRef)!(pluginId)),
+        ])
+      )
     );
   }
 
@@ -56,16 +62,16 @@ export class BackendInitializer {
             this.#apis.set(api, impl);
             provides.add(api);
           },
-          registerInit: (options) => {
+          registerInit: (registerOptions) => {
             if (registerInit) {
               throw new Error('registerInit must only be called once');
             }
             registerInit = {
               id: extension.id,
               provides,
-              consumes: new Set(Object.values(options.deps)),
-              deps: options.deps,
-              init: options.init,
+              consumes: new Set(Object.values(registerOptions.deps)),
+              deps: registerOptions.deps,
+              init: registerOptions.init as BackendRegisterInit['init'],
             };
           },
         },
@@ -87,17 +93,18 @@ export class BackendInitializer {
 
     for (const registerInit of orderedRegisterResults) {
       // TODO: DI
-      const deps = this.#getInitDeps(registerInit.deps);
+      const deps = await this.#getInitDeps(registerInit.deps, registerInit.id);
+      await registerInit.init(deps);
       // Maybe return stop? or lifecycle API
-      this.#stops.push(await registerInit.init(deps));
+      // this.#stops.push();
     }
   }
 
-  async stop(): Promise<void> {
-    for (const stop of this.#stops) {
-      await stop.stop();
-    }
-  }
+  // async stop(): Promise<void> {
+  //   for (const stop of this.#stops) {
+  //     await stop.stop();
+  //   }
+  // }
 
   private validateSetup() {}
 

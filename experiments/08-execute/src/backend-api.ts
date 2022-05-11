@@ -15,7 +15,7 @@ export interface Backend {
     options?: TOptions
   ): void;
   start(): Promise<void>;
-  stop(): Promise<void>;
+  // stop(): Promise<void>;
 }
 
 interface Logger {
@@ -25,6 +25,10 @@ interface Logger {
 
 interface ConfigApi {
   getString(key: string): string;
+}
+
+interface HttpRouterApi {
+  get(path: string): void;
 }
 
 export const loggerApiRef = createApiRef<Logger>({
@@ -39,6 +43,10 @@ export const pluginMetadataApiRef = createApiRef<PluginMetadataApi>({
   id: 'core.pluginMetadata',
 });
 
+export const httpRouterApiRef = createApiRef<HttpRouterApi>({
+  id: 'core.apiRouter',
+});
+
 export function createApiFactory<
   Api,
   Impl extends Api,
@@ -47,52 +55,45 @@ export function createApiFactory<
   return factory;
 }
 
-interface ApiForPlugin<T> {
-  forPlugin(id: string): T;
-}
+const BACKEND_ROOT_ID = 'root';
 
-class ToyLogger implements Logger, ApiForPlugin<Logger> {
-  constructor(readonly fields: { [name: string]: string }) {}
-  log(message: string): void {
-    console.log(
-      `${Object.entries(this.fields)
-        .map((f) => f.join('='))
-        .join(' ')}: ${message}`
-    );
-  }
+// const apiRouterFactory = createApiFactory({
+//   api: httpRouterApiRef,
+//   deps: { loggerFactory: loggerApiRef, config: configApiRef },
+//   factory: async ({ loggerFactory }) => {
+//     const router = Router();
 
-  child(fields: { [name: string]: string }): Logger {
-    return new ToyLogger({ ...this.fields, ...fields });
-  }
+//     return async (pluginId: string) => {
+//       const logger = await loggerFactory(pluginId);
+//       const pluginRouter = Router();
+//       pluginRouter.use((req, res, next) => {
+//         logger.log(`Incoming request to ${req.url}`);
+//         // "Incoming request to /derp, plugin=catalog"
+//       });
+//       router.use(`/${pluginId}`, pluginRouter);
 
-  forPlugin(id: string): Logger {
-    return this.child({ pluginId: id });
-  }
-}
-
-const loggerFactory = createApiFactory({
-  api: loggerApiRef,
-  deps: { pluginMetadata: pluginMetadataApiRef, config: configApiRef },
-  //  staticFactory: () => new ToyLogger({}),
-  factory: async ({ pluginMetadata, config }) => {
-    // const fields = { pluginId: pluginMetadata.pluginId };
-    // return parentLogger.child(fields);
-    console.log(`Creating logger with level ${config.getString('logLevel')}`);
-    return new ToyLogger({});
-    // return {
-    //   ...parentLogger,
-    //   getThisForPlugin(id: string): Logger {
-    //     return parentLogger.child({ pluginId: id });
-    //   },
-    // };
-  },
-});
+//       return {
+//         use(path: string, middleware: Middleware) {
+//           pluginRouter.use(path, (req, res, next) => {
+//             logger.log(req.ctx, `Incoming request to ${req.url}`);
+//             // "Incoming request to /derp, plugin=catalog"
+//           });
+//         },
+//       }
+//     }
+//   },
+// });
 
 export interface PluginMetadataApi {
   pluginId: string;
 }
 
 type TypesToApiRefs<T> = { [key in keyof T]: ApiRef<T[key]> };
+type DepsToDepFactories<T> = {
+  [key in keyof T]: (pluginId: string) => Promise<T[key]>;
+};
+
+export type FactoryFunc<Impl> = (pluginId: string) => Promise<Impl>;
 
 export type ApiFactory<
   Api,
@@ -101,7 +102,7 @@ export type ApiFactory<
 > = {
   api: ApiRef<Api>;
   deps: TypesToApiRefs<Deps>;
-  factory(deps: Deps): Impl;
+  factory(deps: DepsToDepFactories<Deps>): Promise<FactoryFunc<Impl>>;
 };
 
 export type AnyApiFactory = ApiFactory<
@@ -111,40 +112,57 @@ export type AnyApiFactory = ApiFactory<
 >;
 
 export type ApiHolder = {
-  get<T>(api: ApiRef<T>): T | undefined;
+  get<T>(api: ApiRef<T>): FactoryFunc<T> | undefined;
 };
 
+// patrick we are stuck now, fix this plz.
+// It's something! ¯\_(ツ)_/¯
+
 class CoreApiRegistry {
-  readonly #implementations: Map<string, unknown>;
+  // readonly #pluginImplementations: Map<string, unknown>;
+  readonly #implementations: Map<string, Map<string, unknown>>;
   readonly #factories: Map<string, AnyApiFactory>;
 
   constructor(factories: AnyApiFactory[]) {
     this.#factories = new Map(factories.map((f) => [f.api.id, f]));
+    this.#implementations = new Map();
+    // this.#pluginImplementations = new Map();
   }
 
-  get<T>(ref: ApiRef<T>): T | undefined {
-    if (this.#implementations.has(ref.id)) {
-      return this.#implementations.get(ref.id) as T;
-    }
-
-    const implementation = this.#instantiate(ref);
-    this.#implementations.set(ref.id, implementation);
-    return implementation;
-  }
-
-  #instantiate<T>(ref: ApiRef<T>): T {
-    if (!this.#factories.has(ref.id)) {
+  get<T>(ref: ApiRef<T>): FactoryFunc<T> | undefined {
+    const factory = this.#factories.get(ref.id);
+    if (!factory) {
       return undefined;
     }
 
-    const factory = this.#factories.get(ref.id);
-    const concreteDeps = Object.fromEntries(
-      Object.entries(factory.deps).map(([name, apiRef]) => [
-        name,
-        this.get(apiRef),
-      ])
-    );
-    return factory.factory(concreteDeps) as T;
+    return async (pluginId: string): Promise<T> => {
+      if (this.#implementations.has(ref.id)) {
+        if (this.#implementations.get(ref.id)!.has(pluginId)) {
+          return this.#implementations.get(ref.id)!.get(pluginId) as T;
+        } else {
+          this.#implementations.set(ref.id, new Map<string, unknown>());
+        }
+      } else {
+        this.#implementations.set(ref.id, new Map());
+      }
+
+      const factoryDeps = Object.fromEntries(
+        Object.entries(factory.deps).map(([name, apiRef]) => [
+          name,
+          this.get(apiRef)!, // TODO: throw
+        ])
+      );
+
+      const factoryFunc = await factory.factory(factoryDeps);
+      const implementation = await factoryFunc(pluginId);
+
+      this.#implementations.set(
+        ref.id,
+        this.#implementations.get(ref.id)!.set(pluginId, implementation)
+      );
+
+      return implementation as T;
+    };
   }
 }
 
@@ -168,9 +186,9 @@ export class BackstageBackend implements Backend {
     await this.#initializer.start();
   }
 
-  async stop(): Promise<void> {
-    await this.#initializer.stop();
-  }
+  // async stop(): Promise<void> {
+  //   await this.#initializer.stop();
+  // }
 }
 
 interface CreateBackendOptions {

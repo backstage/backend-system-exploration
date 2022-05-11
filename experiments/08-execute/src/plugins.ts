@@ -1,3 +1,4 @@
+import { loggerApiRef } from './backend-api';
 import {
   BackendEnv,
   createApiRef,
@@ -54,17 +55,16 @@ export const catalogPlugin = createBackendPlugin({
     env.registerInitApi(catalogProcessingInitApiRef, processingExtensions);
 
     env.registerInit({
-      deps: {},
-      // deps: {
-      //   apiRouter: backend.apis.apiRouter,
-      // },
-      async init({ apiRouter }) {
+      deps: {
+        logger: loggerApiRef,
+      },
+      async init({ logger }) {
         const catalog = new Catalog(processingExtensions.processors);
         if (!options?.disableProcessing) {
           await catalog.start();
         }
 
-        // apiRouter.use('/v1', createV1CatalogRoutes(catalog));
+        logger.log('HELLO!');
       },
     });
   },
